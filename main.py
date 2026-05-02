@@ -8,16 +8,17 @@ from datetime import datetime, timedelta
 # 1. CLASES DE LÓGICA
 # ==========================================
 class Paciente:
-    def __init__(self, nombre, apellido, edad, dni, dx):
+    def __init__(self, nombre, apellido, edad, dni, dx, hospital):
         self.nombre = nombre
         self.apellido = apellido
         self.edad = edad
         self.dni = dni
         self.dx = dx
+        self.hospital = hospital  # <-- NUEVO DATO
         self.estudios = []
 
     def __str__(self):
-        return f"{self.apellido}, {self.nombre} (DNI: {self.dni}) - DX: {self.dx}"
+        return f"{self.apellido}, {self.nombre} (DNI: {self.dni}) - Hospital: {self.hospital}"
 
 
 class Rotem:
@@ -117,24 +118,23 @@ def cargar_desde_sheets():
         filas = sheet.get_all_values()
 
         if not filas or len(filas) <= 1:
-            return []  # Está vacío o solo tiene los títulos
+            return []
 
-        datos = filas[1:]  # Omitimos la primera fila (los títulos)
+        datos = filas[1:]
         pacientes_dict = {}
 
         for fila in datos:
-            # Rellenamos con espacios vacíos por si alguna columna quedó en blanco
-            while len(fila) < 6:
-                fila.append("")
+            # Ahora rellenamos hasta 7 columnas por si es un paciente viejo
+            while len(fila) < 7:
+                fila.append("No especificado")
 
-            fecha, dni, apellido, nombre, dx, sugerencia = fila[:6]
+            # Extraemos las 7 variables
+            fecha, dni, apellido, nombre, dx, sugerencia, hospital = fila[:7]
 
-            # Si el paciente no existe en el diccionario local, lo creamos
             if dni not in pacientes_dict:
-                pac = Paciente(nombre, apellido, "", dni, dx)
+                pac = Paciente(nombre, apellido, "", dni, dx, hospital)
                 pacientes_dict[dni] = pac
 
-            # Le agregamos el estudio con la fecha y sugerencia del Excel
             estudio_recuperado = Rotem(fecha_manual=fecha, sugerencia_manual=sugerencia)
             pacientes_dict[dni].estudios.append(estudio_recuperado)
 
@@ -147,14 +147,15 @@ def cargar_desde_sheets():
 def guardar_en_sheets(paciente, estudio):
     try:
         sheet = conectar_sheets()
-        # Tiene que coincidir con tus columnas: Fecha | DNI | Apellido | Nombre | Diagnostico | Sugerencia
+        # Agregamos paciente.hospital al final de la lista
         nueva_fila = [
             estudio.fecha_hora,
             paciente.dni,
             paciente.apellido,
             paciente.nombre,
             paciente.dx,
-            estudio.sugerencia
+            estudio.sugerencia,
+            paciente.hospital  # <-- NUEVO DATO
         ]
         sheet.append_row(nueva_fila)
         return True
@@ -180,6 +181,10 @@ tab_cargar, tab_buscar, tab_teoria = st.tabs(["📝 Cargar Nuevo Estudio", "🔍
 
 with tab_cargar:
     st.markdown("### Datos del Paciente")
+
+    # Menú desplegable para elegir el hospital
+    hospital_input = st.selectbox("🏥 Institución", ["Hospital Córdoba", "Hospital de Niños", "Hospital San Roque", "Otro"])
+
     col1, col2 = st.columns(2)
     with col1:
         dni_input = st.text_input("DNI del Paciente")
@@ -224,8 +229,8 @@ with tab_cargar:
                 if not nombre_input or not apellido_input:
                     st.error("⚠️ Paciente nuevo detectado. Por favor, complete Nombre y Apellido.")
                     st.stop()
-                paciente_actual = Paciente(nombre_input, apellido_input, edad_input, dni_input, dx_input)
-                # Lo agregamos temporalmente a la sesión para buscarlo después sin recargar todo
+                paciente_actual = Paciente(nombre_input, apellido_input, edad_input, dni_input, dx_input,
+                                           hospital_input)
                 st.session_state.pacientes.append(paciente_actual)
 
             nuevo_estudio = Rotem(ex_ct, ex_a5, ex_a10, ex_ml, fi_a5, fi_a10, fi_ml, in_ct, hep_ct, ap_ml)
@@ -251,7 +256,7 @@ with tab_buscar:
 
             if paciente_encontrado:
                 st.write(
-                    f"**Paciente:** {paciente_encontrado.apellido}, {paciente_encontrado.nombre} | **Diagnóstico:** {paciente_encontrado.dx}")
+                    f"**Paciente:** {paciente_encontrado.apellido}, {paciente_encontrado.nombre} | **Hospital:** {paciente_encontrado.hospital} | **Diagnóstico:** {paciente_encontrado.dx}")
                 st.markdown("---")
 
                 # Invertimos la lista para que el estudio más nuevo salga arriba
