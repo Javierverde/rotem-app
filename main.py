@@ -119,7 +119,7 @@ def guardar_datos(lista_pacientes):
 st.set_page_config(page_title="Sistema ROTEM", page_icon="🩸", layout="centered")
 
 st.title("🩸 Gestión de ROTEM")
-st.subheader("Hospital Córdoba - Banco de Sangre")
+st.subheader("Hospital Córdoba - Servicio de Hemoterapia")
 
 # Cargar la base de datos en memoria
 if 'pacientes' not in st.session_state:
