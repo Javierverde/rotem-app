@@ -1,6 +1,7 @@
 import streamlit as st
 import pickle
 import os
+from datetime import datetime, timedelta
 
 
 # ==========================================
@@ -35,6 +36,10 @@ class Rotem:
         self.intem_ct = intem_ct
         self.heptem_ct = heptem_ct
         self.aptem_ml = aptem_ml
+
+        # Guardar hora de Argentina (UTC-3)
+        hora_arg = datetime.utcnow() - timedelta(hours=3)
+        self.fecha_hora = hora_arg.strftime("%d/%m/%Y %H:%M")
 
         self.sugerencia = self.interpretar()
 
@@ -202,7 +207,7 @@ with tab_buscar:
                 st.markdown("---")
 
                 for i, est in enumerate(paciente_encontrado.estudios, 1):
-                    with st.expander(f"🩸 Estudio #{i} - Ver Detalles"):
+                    with st.expander(f"🩸 Estudio #{i} - Realizado el: {est.fecha_hora}"):
                         st.write(f"**Sugerencia emitida:**")
                         st.code(est.sugerencia)
             else:
