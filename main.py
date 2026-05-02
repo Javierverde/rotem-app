@@ -1,6 +1,6 @@
 import streamlit as st
-import pickle
-import os
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
 
@@ -23,7 +23,9 @@ class Paciente:
 class Rotem:
     def __init__(self, extem_ct=None, extem_a5=None, extem_a10=None, extem_ml=None,
                  fibtem_a5=None, fibtem_a10=None, fibtem_ml=None,
-                 intem_ct=None, heptem_ct=None, aptem_ml=None):
+                 intem_ct=None, heptem_ct=None, aptem_ml=None,
+                 fecha_manual=None, sugerencia_manual=None):
+
         self.extem_ct = extem_ct
         self.extem_a5 = extem_a5
         self.extem_a10 = extem_a10
@@ -37,23 +39,24 @@ class Rotem:
         self.heptem_ct = heptem_ct
         self.aptem_ml = aptem_ml
 
-        # Guardar hora de Argentina (UTC-3)
-        hora_arg = datetime.utcnow() - timedelta(hours=3)
-        self.fecha_hora = hora_arg.strftime("%d/%m/%Y %H:%M")
-
-        self.sugerencia = self.interpretar()
+        # Si viene del Excel, usamos los datos guardados. Si es nuevo, calculamos.
+        if fecha_manual and sugerencia_manual:
+            self.fecha_hora = fecha_manual
+            self.sugerencia = sugerencia_manual
+        else:
+            hora_arg = datetime.utcnow() - timedelta(hours=3)
+            self.fecha_hora = hora_arg.strftime("%d/%m/%Y %H:%M")
+            self.sugerencia = self.interpretar()
 
     def interpretar(self):
         recomendaciones = []
 
-        # 1º HIPERFIBRINOLISIS
         if self.extem_ml is not None and self.extem_ml > 15:
             if self.aptem_ml is not None and self.aptem_ml < 15:
                 recomendaciones.append("1º - HIPERFIBRINOLISIS: Considerar Ac. Tranexámico")
             elif self.fibtem_ml is not None and self.fibtem_ml > 15:
                 recomendaciones.append("1º - HIPERFIBRINOLISIS (Por EXTEM/FIBTEM): Considerar Ac. Tranexámico")
 
-        # 2º EFECTO HEPARINA
         if self.intem_ct is not None and self.intem_ct > 240:
             if self.heptem_ct is not None:
                 if self.heptem_ct < 240:
@@ -63,7 +66,6 @@ class Rotem:
             else:
                 recomendaciones.append("- INTEM CT Prolongado (>240): Falta HEPTEM para descartar Heparina.")
 
-        # 3º y 4º DÉFICIT DE FIBRINÓGENO O PLAQUETAS
         firmeza_baja_extem = False
         if (self.extem_a5 is not None and self.extem_a5 < 30) or (self.extem_a10 is not None and self.extem_a10 < 40):
             firmeza_baja_extem = True
@@ -79,11 +81,9 @@ class Rotem:
                 recomendaciones.append(
                     "- Firmeza baja en EXTEM: Falta cargar FIBTEM para diferenciar Plaquetas vs Fibrinógeno.")
 
-        # 5º DÉFICIT DE FACTORES VIT K DEPENDIENTES
         if self.extem_ct is not None and self.extem_ct > 80:
             recomendaciones.append("5º - DEFICIT FACTORES (Vit K dep.): Considerar Conc. Protrombínico o PFC")
 
-        # TODO NORMAL PERO SANGRA
         extem_normal = (self.extem_ct is not None and self.extem_ct <= 80) and \
                        ((self.extem_a5 is not None and self.extem_a5 >= 30) or (
                                    self.extem_a10 is not None and self.extem_a10 >= 40))
@@ -99,23 +99,68 @@ class Rotem:
 
 
 # ==========================================
-# 2. FUNCIONES DE ARCHIVO
+# 2. CONEXIÓN A GOOGLE SHEETS
 # ==========================================
-ARCHIVO_DATOS = "historial_rotem.dat"
+def conectar_sheets():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    skey = dict(st.secrets["gcp_service_account"])
+    credentials = Credentials.from_service_account_info(skey, scopes=scopes)
+    cliente = gspread.authorize(credentials)
+    # Abre la planilla llamada Base_ROTEM y selecciona la Hoja 1
+    sheet = cliente.open("Base_ROTEM").sheet1
+    return sheet
 
 
-def cargar_datos():
-    if not os.path.exists(ARCHIVO_DATOS): return []
-    with open(ARCHIVO_DATOS, 'rb') as f:
-        try:
-            return pickle.load(f)
-        except EOFError:
-            return []
+def cargar_desde_sheets():
+    try:
+        sheet = conectar_sheets()
+        filas = sheet.get_all_values()
+
+        if not filas or len(filas) <= 1:
+            return []  # Está vacío o solo tiene los títulos
+
+        datos = filas[1:]  # Omitimos la primera fila (los títulos)
+        pacientes_dict = {}
+
+        for fila in datos:
+            # Rellenamos con espacios vacíos por si alguna columna quedó en blanco
+            while len(fila) < 6:
+                fila.append("")
+
+            fecha, dni, apellido, nombre, dx, sugerencia = fila[:6]
+
+            # Si el paciente no existe en el diccionario local, lo creamos
+            if dni not in pacientes_dict:
+                pac = Paciente(nombre, apellido, "", dni, dx)
+                pacientes_dict[dni] = pac
+
+            # Le agregamos el estudio con la fecha y sugerencia del Excel
+            estudio_recuperado = Rotem(fecha_manual=fecha, sugerencia_manual=sugerencia)
+            pacientes_dict[dni].estudios.append(estudio_recuperado)
+
+        return list(pacientes_dict.values())
+    except Exception as e:
+        st.error(f"Error de conexión inicial con Google Sheets: {e}")
+        return []
 
 
-def guardar_datos(lista_pacientes):
-    with open(ARCHIVO_DATOS, 'wb') as f:
-        pickle.dump(lista_pacientes, f)
+def guardar_en_sheets(paciente, estudio):
+    try:
+        sheet = conectar_sheets()
+        # Tiene que coincidir con tus columnas: Fecha | DNI | Apellido | Nombre | Diagnostico | Sugerencia
+        nueva_fila = [
+            estudio.fecha_hora,
+            paciente.dni,
+            paciente.apellido,
+            paciente.nombre,
+            paciente.dx,
+            estudio.sugerencia
+        ]
+        sheet.append_row(nueva_fila)
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar en la nube: {e}")
+        return False
 
 
 # ==========================================
@@ -124,13 +169,13 @@ def guardar_datos(lista_pacientes):
 st.set_page_config(page_title="Sistema ROTEM", page_icon="🩸", layout="centered")
 
 st.title("🩸 Gestión de ROTEM")
-st.subheader("Hospital Córdoba - Servicio de Hemoterapia")
+st.subheader("Hospital Córdoba - Banco de Sangre")
 
-# Cargar la base de datos en memoria
+# Cargar la base de datos al iniciar la app
 if 'pacientes' not in st.session_state:
-    st.session_state.pacientes = cargar_datos()
+    with st.spinner('Conectando con la base de datos del hospital...'):
+        st.session_state.pacientes = cargar_desde_sheets()
 
-# Crear pestañas de navegación (AHORA SON 3)
 tab_cargar, tab_buscar, tab_teoria = st.tabs(["📝 Cargar Nuevo Estudio", "🔍 Buscar Historial", "📚 Teoría y Protocolo"])
 
 with tab_cargar:
@@ -173,7 +218,6 @@ with tab_cargar:
         if not dni_input:
             st.error("⚠️ El DNI es obligatorio para guardar el estudio.")
         else:
-            # Buscar paciente o crearlo
             paciente_actual = next((p for p in st.session_state.pacientes if p.dni == dni_input), None)
 
             if not paciente_actual:
@@ -181,20 +225,24 @@ with tab_cargar:
                     st.error("⚠️ Paciente nuevo detectado. Por favor, complete Nombre y Apellido.")
                     st.stop()
                 paciente_actual = Paciente(nombre_input, apellido_input, edad_input, dni_input, dx_input)
+                # Lo agregamos temporalmente a la sesión para buscarlo después sin recargar todo
                 st.session_state.pacientes.append(paciente_actual)
 
-            # Crear estudio y analizar
             nuevo_estudio = Rotem(ex_ct, ex_a5, ex_a10, ex_ml, fi_a5, fi_a10, fi_ml, in_ct, hep_ct, ap_ml)
             paciente_actual.estudios.append(nuevo_estudio)
 
-            # Guardar en archivo local
-            guardar_datos(st.session_state.pacientes)
-
-            st.success("✅ Estudio guardado correctamente.")
-            st.info(f"**SUGERENCIA TERAPÉUTICA:**\n\n{nuevo_estudio.sugerencia}")
+            # 🚀 GUARDAR EN LA NUBE (GOOGLE SHEETS) 🚀
+            if guardar_en_sheets(paciente_actual, nuevo_estudio):
+                st.success("✅ Estudio analizado y guardado permanentemente en la nube.")
+                st.info(f"**SUGERENCIA TERAPÉUTICA:**\n\n{nuevo_estudio.sugerencia}")
 
 with tab_buscar:
     st.markdown("### Buscar Historial por DNI")
+    # Botón para forzar la actualización desde el Excel (por si otro médico cargó algo)
+    if st.button("🔄 Refrescar base de datos"):
+        st.session_state.pacientes = cargar_desde_sheets()
+        st.success("Base de datos sincronizada con Google Sheets.")
+
     dni_buscar = st.text_input("Ingrese DNI para buscar", key="buscar")
 
     if st.button("Buscar Paciente"):
@@ -206,14 +254,14 @@ with tab_buscar:
                     f"**Paciente:** {paciente_encontrado.apellido}, {paciente_encontrado.nombre} | **Diagnóstico:** {paciente_encontrado.dx}")
                 st.markdown("---")
 
-                for i, est in enumerate(paciente_encontrado.estudios, 1):
+                # Invertimos la lista para que el estudio más nuevo salga arriba
+                for i, est in enumerate(reversed(paciente_encontrado.estudios), 1):
                     with st.expander(f"🩸 Estudio #{i} - Realizado el: {est.fecha_hora}"):
                         st.write(f"**Sugerencia emitida:**")
                         st.code(est.sugerencia)
             else:
                 st.warning("No se encontró ningún paciente con ese DNI en el historial.")
 
-# NUEVA PESTAÑA: TEORÍA Y PROTOCOLO
 with tab_teoria:
     st.markdown("### 📚 Guía de Interpretación del ROTEM")
     st.write(
