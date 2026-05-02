@@ -170,7 +170,7 @@ def guardar_en_sheets(paciente, estudio):
 st.set_page_config(page_title="Sistema ROTEM", page_icon="🩸", layout="centered")
 
 st.title("🩸 Gestión de ROTEM")
-st.subheader("Hospital Córdoba - Banco de Sangre")
+st.subheader("Servicio de Hemoterapia")
 
 # Cargar la base de datos al iniciar la app
 if 'pacientes' not in st.session_state:
